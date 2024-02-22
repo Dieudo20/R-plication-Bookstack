@@ -1,121 +1,179 @@
-# Réplication-Bookstack
-##### Installation et configuration de bookstack
+# Partie 1 : Prérequis
+# Installez les prérequis minimaux sur les deux serveurs, Srv1-D12 et Srv2-D12, 
+# incluant Apache, PHP, MariaDB, Git et Composer 
+# Serveur 1 et Serveur 2
 
-## guide complet pour installer et configurer BookStack en mode haute disponibilité (srv1/srv2) utilisant l'adresse IP virtuelle
+# Mettre à jour le système :
 
-# Mettez à jour tous les paquets logiciels des systèmes :
+    sudo apt update && sudo apt upgrade -y
 
-    apt update && sudo apt upgrade -y
+# Installer Apache, PHP et MariaDB :
 
-# Installation de Apache, PHP, MySQL et leurs extensions nécessaires sur chacun des serveurs Web :
-# Installer Apache HTTP Server :
+    sudo apt install apache2 php libapache2-mod-php mariadb-server -y
 
-    sudo apt install apache2 -y
+# Activer les modules PHP requis :
 
-# Activation module mod_rewrite pour Apache afin de gérer les URL amicales :
+    sudo apt install php-{cli,common,fpm,mbstring,xml,zip,gd,mysql,curl,bcmath,json,ldap,gmp,opcache,redis,imagick,pear} -y
 
-    sudo a2enmod rewrite
-
-# Création de la structure du répertoire pour BookStack sous /var/www/html :
-
-    sudo mkdir -p /var/www/html/bookstack/{app,public}
-
-# Définir les propriétaires et groupes appropriés pour cette structure de répertoire :
-
-    sudo chown -R $USER:$USER /var/www/html/bookstack
-
-# être sur que les permissions sont sécurisées :
-
-    find /var/www/html/bookstack -type d -exec chmod 750 {} \;
-    find /var/www/html/bookstack -type f -exec chmod 640 {} \;
-
-
-# l'installation de PHP et ses modules requis :
-
-    sudo apt install php libapache2-mod-php php-{cli,common,fpm,mbstring,xml,zip,gd,mysql,curl,bcmath,json,ldap,gmp,opcache,redis,imagick,pear} -y
-
-# Modification de la configuration globale de PHP pour inclure les directives supplémentaires nécessaires au bon fonctionnement de BookStack :
+# Configurer PHP :
 
     sudo sed -ri 's!upload_max_filesize = .+!upload_max_filesize = 10M!g' /etc/php/*/fpm/php.ini
     sudo sed -ri 's!post_max_size = .+!post_max_size = 20M!g' /etc/php/*/fpm/php.ini
     sudo sed -ri 's!memory_limit = .+!memory_limit = 512M!g' /etc/php/*/fpm/php.ini
 
-# Redémarrage de service FPM PHP après avoir effectué les modifications ci-dessus :
+# Et redémarrer le service PHP-FPM :
 
     sudo systemctl restart phpX.X-fpm
-(Remplacez X.X par la version spécifique de PHP.)
+# (Remplacez X.X par la version spécifique de PHP.)
 
-# Pour autoriser les sites web à utiliser Composer (gestionnaire de packages PHP), il faut installer Git et Composer sur les deux serveurs (srv1-d12 et srv2-d12) :
+# Installer Git et Composer :
 
     sudo apt install git composer -y
 
-# Il faut créer ensuite un lien symbolique vers la dernière version stable de BookStack en tant que nouvelle application Laravel :
+# Partie 2 : Configuration de GlusterFS
+# Formatez la partition /dev/nvme1n1 en ext4 et montez-la en tant que /mnt/brick1 sur chaque serveur.
 
-    cd /var/www/html/bookstack/app
-    composer create-project --prefer-dist thujohn/pdf laravel-bookstack
-    rm -rf public/*
-    cp -r laravel-bookstack/public/. ./
-    mv laravel-bookstack/vendor app/HQ > /dev/null
+# Serveur 1 et Serveur 2
+# Formatter la partition :
 
-# Maintenant, créez une base de données MariaDB/MySQL pour BookStack et importez sa structure schématique initiale :
-# Connexion à MariaDB/MySQL :
+    sudo mkfs.ext4 /dev/nvme1n1
 
-    sudo mariadb -u root -p
+# Monter la partition :
 
-# Création d'une base de données et un nouvel utilisateur privilégié :
+    sudo mkdir /mnt/brick1
+    sudo mount /dev/nvme1n1 /mnt/brick1
 
-    CREATE DATABASE bookstack CHARACTER SET utf8 COLLATE utf8_unicode_ci;
-    GRANT ALL PRIVILEGES ON bookstack.* TO 'bookstackuser'@'localhost' IDENTIFIED BY '<choose_a_password>';
-    EXIT;
+# Autoriser le trafic TCP entrant dans le port 24007 (GlusterFS) :
 
-# Importation de la structure de schéma de BookStack :
+    sudo iptables -A INPUT -p tcp --dport 24007 -j ACCEPT
+    sudo service iptables-persistent save
+    sudo service iptables-persistent reload
 
-    wget https://github.com/BookStackApp/BookStack/archive/refs/tags/v2.1.21.zip
-    unzip v2.1.21.zip
-    mysqldump -u root -p < bookstack-2.1.21/structure.sql | mysql -u root -p bookstack
-    rm -rf v2.1.21.zip bookstack-2.1.21
+# Initialiser les volumes distants sur chaque serveur :
 
-# Configuration de l'environnement BookStack :
-# Copier le fichier de configuration exemple :
+    sudo gluster peer probe Srv2-D12
+    sudo gluster peer probe Srv1-D12
 
-    cp /var/www/html/bookstack/app/config.sample.env /var/www/html/bookstack/app/.env
+# Vérifier les pairs existants :
 
-# Éditer le nouveau fichier .env :
+    sudo gluster peer status
 
-    nano /var/www/html/bookstack/app/.env
+# Créer un volume répliqué appelé gvol1 composé de deux bricks, un sur chaque serveur :
 
-# Modifiez les éléments suivants selon vos besoins :
+    sudo gluster volume create gvol1 transport tcp Srv1-D12:/mnt/brick1 Srv2-D12:/mnt/brick1
 
-    APP_URL=http://<mon_virtual_ip> # Remplacer par votre IP virtuelle
-    DB_*_HOST=localhost # Laisser tel quel
-    DB_*_DATABASE=bookstack
-    DB_*_USERNAME=bookstackuser
-    DB_*_PASSWORD=<choose_a_password> # Mot de passe choisi précédemment
-    CACHE_DRIVER=array
-    SESSION_DRIVER=database
-    QUEUE_CONNECTION=sync
-    LOG_CHANNEL=single
-    BROADCAST_DRIVER=log
+    Activer le volume :
 
-# Activation de SSL pour assurer une connexion sécurisée (facultatif).
-# d'une autorité de certification racine, générez automatiquement un certificat auto-signé pour 
-# tester l'environnement. Sur chaque machine :
+    sudo gluster volume start gvol1
 
-    sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-    -subj '/CN=*.<your_domain>' -keyout /etc/ssl/private/nginx-selfsigned.key \
-    -out /etc/ssl/certs/nginx-selfsigned.crt
+# Partie 3 : Installation et configuration de BookStack
+# Cloner le repository officiel de BookStack et importer la structure de la base de données.
 
-# Il faut s'assurer que la pile complète LEMP est installée et configurée pour prendre en charge SSL :
+# Serveur 1 et Serveur 2
+# Clonez le repo officiel de BookStack :
+
+    cd /var/www/html
+    sudo git clone https://github.com/BookStackApp/BookStack.git
+
+# Importez la structure de la base de données :
+
+    wget https://raw.githubusercontent.com/BookStackApp/BookStack/main/structure.sql
+    sudo mysql -u root -p &lt; structure.sql
+
+# Entrez le mot de passe root lorsque prompté.
+# Accorder les droits au script d'initialisation :
+
+    sudo chmod o+x /var/www/html/BookStack/artisan
+
+# Exécuter le script d'initialisation de BookStack :
+
+    sudo -u www-data php /var/www/html/BookStack/artisan migrate --seed
+    
+# Prenez note des valeurs renvoyées par l'interface en ligne de commande. Vous en aurez besoin ultérieurement.
+# Partie 4 : Relier le volume GlusterFS à BookStack
+# Reliez le volume GlusterFS à l'application BookStack.
+# Serveur 1 et Serveur 2
+
+# Arrêtez les services Apache et PHP-FPM :
+
+    sudo systemctl stop apache2
+    sudo systemctl stop phpX.X-fpm
+
+# (Remplacez X.X par la version spécifique de PHP.)
+
+# Démontez le répertoire existant de BookStack :
+
+    sudo umount /var/www/html/BookStack/data
+
+# Montez le volume GlusterFS dans le chemin d'accès prévu pour BookStack :
+
+    sudo mount -t glusterfs Srv1-D12:/gvol1/BookStack/data /var/www/html/BookStack/data
+
+# Remarque : Lors du montage, vous devez spécifier le chemin absolu du répertoire BookStack/data dans le volume GlusterFS (/gvol1/BookStack/data) plutôt que le volume lui-même (/gvol1).
+
+# Recopiez le contenu existant (si applicable) du répertoire /var/www/html/BookStack/data dans le volume GlusterFS :
+
+    sudo cp -rp /var/www/html/BookStack/data/* /gvol1/BookStack/data
+
+# Redémarrez les services Apache et PHP-FPM :
+
+    sudo systemctl start apache2
+    sudo systemctl start phpX.X-fpm
+
+# Partie 5 : Configuration de NGINX en tant que reverse proxy
+# Installez NGINX et configurez-le comme reverse proxy pour exposer BookStack derrière une adresse IP virtuelle ou un nom de domaine.
+# Serveur 1 et Serveur 2
+
+# Installer NGINX :
 
     sudo apt install nginx -y
-    
-# Récupérez ou concevez notre propre bloc NGINX personnalisé prenant en charge SSL
-# ...
 
-# Une fois terminé, activez et redémarrez les services concernés :
+# Écrivez un bloc NGINX personnalisé pour servir des demandes HTTP provenant de l'extérieur :
 
-    sudo systemctl enable apache2
-    sudo systemctl restart apache2
+    sudo tee /etc/nginx/conf.d/bookstack.conf &lt;&lt;EOF
+    server {
+        listen 80;
+        return 301 https://\$host\$request_uri;
+    }
+
+    server {
+        listen 443 ssl http2;
+        server_name mydomain.fr;
+
+        ssl_certificate /etc/ssl/certs/nginx-selfsigned.crt;
+        ssl_certificate_key /etc/ssl/private/nginx-selfsigned.key;
+
+        location / {
+            proxy_pass http://localhost:8000;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+        }
+    }
+    EOF
+# Adjustez le nom de domaine et les chemins d'accès aux certificats SSL selon votre configuration.
+
+# Activez et démarrez le service NGINX :
+
+    sudo systemctl enable nginx
+    sudo systemctl start nginx
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
