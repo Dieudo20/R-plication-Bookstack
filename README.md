@@ -21,7 +21,7 @@
     sudo sed -ri 's!post_max_size = .+!post_max_size = 20M!g' /etc/php/*/fpm/php.ini
     sudo sed -ri 's!memory_limit = .+!memory_limit = 512M!g' /etc/php/*/fpm/php.ini
 
-# Et redémarrer le service PHP-FPM :
+## Et redémarrer le service PHP-FPM :
 
     sudo systemctl restart phpX.X-fpm
 # (Remplacez X.X par la version spécifique de PHP.)
